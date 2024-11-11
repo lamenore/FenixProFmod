@@ -17,6 +17,8 @@ using Microsoft.IO;
 using Cysharp.Diagnostics;
 using System.Reactive.Subjects;
 using System.Reflection.PortableExecutable;
+using System.Buffers;
+using Microsoft.VisualBasic;
 
 namespace FenixProFmodAva.ViewModels;
 
@@ -185,6 +187,12 @@ public class MainViewModel : ViewModelBase
         if (headerIndex == 0)
             return false;
 
+        memory.Position = headerIndex + 4;
+        var chunkSize = reader.ReadInt32();
+
+        if (chunkSize == 0)
+            return false;
+
         using var fsbFile = File.OpenWrite(outputFileName);
 
         memory.Position = headerIndex + 12;
@@ -192,11 +200,20 @@ public class MainViewModel : ViewModelBase
         reader.ReadInt32();
         memory.Position = nextOffset;
 
-        await memory.CopyToAsync(fsbFile);
+        var buffer = new byte[memory.Length - memory.Position];
+        memory.Read(buffer);
+
+        var success = InitFsbEncrypted(ref buffer);
+
+        fsbFile.Write(buffer, 0, buffer.Length);
 
         await file.FlushAsync();
         await memory.FlushAsync();
         await fsbFile.FlushAsync();
+
+        
+
+
 
         return true;
     }
@@ -267,7 +284,8 @@ public class MainViewModel : ViewModelBase
 
                 if (await ExtractFSB(file, fsbFile) == false)
                 {
-                    throw new Exception("Error while extracting bank.");
+                    //throw new Exception("Error while extracting bank.");
+                    continue;
                 }
 
                 if (Directory.Exists(wavDir))
@@ -283,7 +301,7 @@ public class MainViewModel : ViewModelBase
                 await f.CopyToAsync(memory);
                 memory.Position = 0;
                 try
-                {
+                { 
                     FmodSoundBank bank = FsbLoader.LoadFsbFromByteArray(memory.GetBuffer());
                     var listFileText = new StringBuilder();
 
@@ -344,6 +362,22 @@ public class MainViewModel : ViewModelBase
         }
     }
 
+
+    bool InitFsbEncrypted(ref byte[] buffer)
+    {
+        var header = new byte[4];
+
+        Buffer.BlockCopy(buffer, 0, header, 0, 4);
+
+        if ( Decryption.ByteArrayCompare(buffer, Encoding.ASCII.GetBytes("RIFF")) ) {
+            return false;
+        }
+
+        var decrypt = Decryption.decrypt(ref buffer, FsbKeys.fsbkey_list[0]);
+        return true;
+    }
+
+
     async Task RebuildBanks()
     {
         IsPathsReadOnly = true;
@@ -388,7 +422,7 @@ public class MainViewModel : ViewModelBase
             ProgressValue = 0;
             foreach (var wavDir in wavDirs)
             {
-                var bankName = Path.GetFileNameWithoutExtension(wavDir);
+                var bankName = Path.GetFileName(wavDir);
 
                 ProgressText = $"Building {bankName}.bank";
                 ProgressValue++;
@@ -409,7 +443,7 @@ public class MainViewModel : ViewModelBase
 
                 // async iterate.
                 await foreach (string item in ProcessX.StartAsync(
-                    $"FMOD\\fsbankcl.exe -rebuild -thread_count {threadCount} -format Vorbis -ignore_errors -quality 85 -verbosity 5 -o {fsbFile} {lstFile}"))
+                    $"FMOD\\fsbankcl.exe -rebuild -thread_count {threadCount} -format Vorbis -ignore_errors -quality 60 -encryption_key {FsbKeys.fsbkey_list[0]} -verbosity 5 -o \"{fsbFile}\" \"{lstFile}\""))
                 {
                     await AddConsoleLine.Handle(item).ToTask();
                 }
